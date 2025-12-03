@@ -6,7 +6,7 @@ const router = Router();
 
 router.post('/profile', protect, requireRoles('candidate'), createProfile);
 router.put('/profile', protect, requireRoles('candidate'), updateProfile);
-router.get('/profile', protect, getMyProfile);
+router.get('/profile', protect, requireRoles('candidate'), getMyProfile);
 router.get('/:id', protect, requireRoles('recruiter', 'admin'), getCandidateById);
 
 export default router;

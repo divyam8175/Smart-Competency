@@ -19,9 +19,16 @@ const api = axios.create({
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('scd_token');
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
+  if (!config.headers) {
+    config.headers = {};
   }
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token.trim()}`;
+  } else if (import.meta.env.DEV) {
+    console.warn('[api] Missing auth token for request', config.url);
+  }
+
   return config;
 });
 
