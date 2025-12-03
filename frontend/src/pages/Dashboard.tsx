@@ -444,7 +444,7 @@ function ProfileTab({ profile, hasProfile, editMode, setEditMode, onProfileUpdat
             onSuccess={(data) => {
               setEditMode(false);
               onProfileUpdate();
-              toast.success('Profile updated! ✨');
+              toast.success('Profile updated! ');
             }}
           />
         ) : (

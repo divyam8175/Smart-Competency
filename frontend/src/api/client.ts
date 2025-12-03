@@ -38,7 +38,7 @@ export const loginUser = async (data: { email: string; password: string }): Prom
 export const createProfile = async (profile: CandidateProfileRequest): Promise<CandidateProfile> => {
   const response = await api.post<CandidateProfile>('/candidates/profile', profile);
   return response.data;
-};
+}; 
 
 export const updateProfile = async (profile: CandidateProfileRequest): Promise<CandidateProfile> => {
   const response = await api.put<CandidateProfile>('/candidates/profile', profile);
@@ -47,6 +47,7 @@ export const updateProfile = async (profile: CandidateProfileRequest): Promise<C
 
 export const getProfile = async (): Promise<CandidateProfile> => {
   const response = await api.get<CandidateProfile>('/candidates/profile');
+  console.log(response);
   return response.data;
 };
 
