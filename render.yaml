@@ -1,0 +1,36 @@
+services:
+  # Backend API
+  - type: web
+    name: smart-competency-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
+      - key: PORT
+        value: 10000
+
+  # Frontend Static Site
+  - type: web
+    name: smart-competency-frontend
+    env: static
+    region: oregon
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://smart-competency-backend.onrender.com

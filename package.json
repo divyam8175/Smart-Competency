@@ -1,0 +1,17 @@
+{
+  "name": "smart-competency",
+  "version": "1.0.0",
+  "description": "Smart Competency Diagnostic Platform",
+  "scripts": {
+    "install:backend": "cd backend && npm install",
+    "install:frontend": "cd frontend && npm install",
+    "build:backend": "cd backend && npm install && npm run build",
+    "build:frontend": "cd frontend && npm install && npm run build",
+    "build": "npm run build:backend",
+    "start": "cd backend && node dist/index.js",
+    "copy:frontend": "node -e \"const fs=require('fs');const path=require('path');if(!fs.existsSync('build'))fs.mkdirSync('build');const copy=(src,dest)=>{if(fs.statSync(src).isDirectory()){if(!fs.existsSync(dest))fs.mkdirSync(dest);fs.readdirSync(src).forEach(f=>copy(path.join(src,f),path.join(dest,f)))}else{fs.copyFileSync(src,dest)}};copy('frontend/dist','build')\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
