@@ -1,11 +1,10 @@
 // @ts-nocheck
 import { type ReactElement, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useSpring, animated } from 'react-spring';
 import {
   LayoutDashboard, User, TrendingUp, Brain, LogOut, Settings,
-  Bell, Search, Menu as MenuIcon, Sparkles, Zap, Target,
-  Award, Activity, BarChart3, PieChart, Users, FileText
+  Bell, Menu as MenuIcon, Sparkles, Zap, Target,
+  Award, Activity, BarChart3, Users, FileText, ShieldCheck
 } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -34,10 +33,13 @@ import ComparisonTable from '../components/ai/ComparisonTable';
 import JobMatchBoard from '../components/ai/JobMatchBoard';
 import {
   CandidateProfile, CandidateProfileRequest, InsightSummary,
-  JobFitPrediction, RankedCandidate, SkillGapAnalysis as SkillGapType
+  JobFitPrediction, RankedCandidate, ScoreBreakdown,
+  ScoreHistoryEntry, SkillGapAnalysis as SkillGapType,
+  ResumeSnapshot, ResumeParseResponse
 } from '../types';
 
 type TabType = 'dashboard' | 'profile' | 'analytics' | 'ai';
+const DEFAULT_ROLE_QUERY = 'AI Engineer';
 
 export default function Dashboard(): ReactElement {
   const { user, logout } = useAuth();
@@ -51,43 +53,85 @@ export default function Dashboard(): ReactElement {
   const [editMode, setEditMode] = useState(false);
 
   // Analytics state
-  const [scores, setScores] = useState<any>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [scoreBreakdown, setScoreBreakdown] = useState<ScoreBreakdown | null>(null);
+  const [history, setHistory] = useState<ScoreHistoryEntry[]>([]);
   const [insights, setInsights] = useState<InsightSummary | null>(null);
-  const [roleMatches, setRoleMatches] = useState<any[]>([]);
+  const [roleMatches, setRoleMatches] = useState<RankedCandidate[]>([]);
+  const [resumeSnapshot, setResumeSnapshot] = useState<ResumeSnapshot | null>(null);
 
   // AI state
   const [skillGapAnalysis, setSkillGapAnalysis] = useState<SkillGapType | null>(null);
   const [jobFitPrediction, setJobFitPrediction] = useState<JobFitPrediction | null>(null);
   const [rankings, setRankings] = useState<RankedCandidate[]>([]);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [comparisonData, setComparisonData] = useState<RankedCandidate[]>([]);
+  const [rankingRole, setRankingRole] = useState(DEFAULT_ROLE_QUERY);
+
+  const [skillGapLoading, setSkillGapLoading] = useState(false);
+  const [jobFitLoading, setJobFitLoading] = useState(false);
+  const [rankingLoading, setRankingLoading] = useState(false);
+  const [matchesLoading, setMatchesLoading] = useState(false);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+
+  const isCandidate = user?.role === 'candidate';
+  const isRecruiter = user?.role === 'recruiter';
+  const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
+    if (!user) return;
     loadDashboardData();
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role]);
 
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      const profileData = await getProfile();
-      setProfile(profileData);
-      setHasProfile(true);
-
-      if (user?.role === 'candidate' && user?.id) {
-        const [scoreData, historyData] = await Promise.all([
-          fetchCandidateScore(user.id).catch(() => null),
-          fetchScoreHistory(user.id).catch(() => [])
-        ]);
-        setScores(scoreData);
-        setHistory(historyData);
-      } else if (user?.role === 'recruiter') {
-        const matchesData = await fetchRoleMatches().catch(() => []);
-        setRoleMatches(matchesData);
+      if (isCandidate && user?.id) {
+        await loadCandidateSurface(user.id);
+      } else {
+        setProfile(null);
+        setHasProfile(false);
       }
-    } catch {
-      setHasProfile(false);
+
+      if ((isRecruiter || isAdmin)) {
+        await loadRecruiterSurface();
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to load dashboard data');
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadCandidateSurface = async (candidateId: string) => {
+    const [profileData, scoreData, historyData] = await Promise.all([
+      getProfile().catch(() => null),
+      fetchCandidateScore(candidateId).catch(() => ({ scores: null, insights: null })),
+      fetchScoreHistory(candidateId).catch(() => []),
+    ]);
+
+    if (profileData) {
+      setProfile(profileData);
+      setHasProfile(true);
+      setResumeSnapshot(profileData.resumeSnapshot ?? null);
+    } else {
+      setProfile(null);
+      setHasProfile(false);
+    }
+
+    setScoreBreakdown(scoreData?.scores ?? null);
+    setInsights(scoreData?.insights ?? null);
+    setHistory(historyData ?? []);
+  };
+
+  const loadRecruiterSurface = async () => {
+    const [rankingData, matchesData] = await Promise.all([
+      fetchSmartRanking().catch(() => []),
+      fetchRoleMatches().catch(() => []),
+    ]);
+    setRankings(rankingData ?? []);
+    setRoleMatches(matchesData ?? []);
   };
 
   const handleLogout = () => {
@@ -95,12 +139,124 @@ export default function Dashboard(): ReactElement {
     toast.success('Logged out successfully! 👋');
   };
 
-  const tabConfig = [
-    { id: 'dashboard' as TabType, label: 'Overview', icon: LayoutDashboard },
-    { id: 'profile' as TabType, label: 'Profile', icon: User },
-    { id: 'analytics' as TabType, label: 'Analytics', icon: TrendingUp },
-    { id: 'ai' as TabType, label: 'AI Insights', icon: Brain },
-  ];
+  const handleResumeParsed = (data: ResumeParseResponse) => {
+    setResumeSnapshot(data.snapshot ?? null);
+    if (data.profile) {
+      setProfile(data.profile);
+      setHasProfile(true);
+    }
+    toast.success('Resume analyzed successfully 🎯');
+  };
+
+  const handleSkillGapAnalyze = async (roleFocus?: string) => {
+    if (!user?.id) return;
+    setSkillGapLoading(true);
+    try {
+      const response = await runSkillGapAnalysis({ roleFocus, candidateId: user.id });
+      setSkillGapAnalysis(response.analysis);
+      toast.success('Skill gap insights refreshed');
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to analyze skill gaps');
+    } finally {
+      setSkillGapLoading(false);
+    }
+  };
+
+  const handleJobFitPredict = async (role: string) => {
+    if (!user?.id) return;
+    setJobFitLoading(true);
+    try {
+      const response = await requestJobFitPrediction({ role, candidateId: user.id });
+      setJobFitPrediction(response.prediction);
+      toast.success('Job fit prediction ready');
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to predict job fit');
+    } finally {
+      setJobFitLoading(false);
+    }
+  };
+
+  const handleReportDownload = async () => {
+    if (!user?.id) throw new Error('Candidate ID missing');
+    const blob = await downloadCandidateReport(user.id);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `smart-competency-${user.name ?? 'report'}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleRankingQuery = async (roleQuery: string, limit: number) => {
+    setRankingLoading(true);
+    try {
+      const data = await fetchSmartRanking({ role: roleQuery, limit });
+      setRankings(data);
+      setRankingRole(roleQuery);
+      await handleRoleMatchQuery(roleQuery, Math.min(limit, 5));
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to refresh smart ranking');
+    } finally {
+      setRankingLoading(false);
+    }
+  };
+
+  const handleRoleMatchQuery = async (roleQuery: string, limit = 5) => {
+    setMatchesLoading(true);
+    try {
+      const data = await fetchRoleMatches({ role: roleQuery, limit });
+      setRoleMatches(data);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setMatchesLoading(false);
+    }
+  };
+
+  const toggleCandidateSelection = (candidateId: string) => {
+    setSelectedCandidateIds((prev) => {
+      const exists = prev.includes(candidateId);
+      const updated = exists ? prev.filter((id) => id !== candidateId) : [...prev, candidateId];
+      if (updated.length >= 2) {
+        triggerComparison(updated);
+      } else {
+        setComparisonData([]);
+      }
+      return updated;
+    });
+  };
+
+  const triggerComparison = async (candidateIds: string[]) => {
+    setComparisonLoading(true);
+    try {
+      const comparison = await compareCandidates(candidateIds);
+      setComparisonData(comparison);
+    } catch (error) {
+      console.error(error);
+      toast.error('Comparison failed');
+    } finally {
+      setComparisonLoading(false);
+    }
+  };
+
+  const tabConfig = isRecruiter || isAdmin
+    ? [
+        { id: 'dashboard' as TabType, label: isAdmin ? 'Org Pulse' : 'Pipeline', icon: LayoutDashboard },
+        { id: 'profile' as TabType, label: 'Talent Pool', icon: Users },
+        { id: 'analytics' as TabType, label: 'Comparisons', icon: TrendingUp },
+        { id: 'ai' as TabType, label: isAdmin ? 'Operations' : 'Scoring Ops', icon: Settings },
+      ]
+    : [
+        { id: 'dashboard' as TabType, label: 'Overview', icon: LayoutDashboard },
+        { id: 'profile' as TabType, label: 'Profile', icon: User },
+        { id: 'analytics' as TabType, label: 'Analytics', icon: TrendingUp },
+        { id: 'ai' as TabType, label: 'AI Insights', icon: Brain },
+      ];
 
   return (
     <>
@@ -272,37 +428,73 @@ export default function Dashboard(): ReactElement {
                 transition={{ duration: 0.3 }}
               >
                 {activeTab === 'dashboard' && (
-                  <DashboardOverview
-                    profile={profile}
-                    scores={scores}
-                    insights={insights}
-                    roleMatches={roleMatches}
-                  />
+                  isRecruiter || isAdmin ? (
+                    <RecruiterOverview
+                      rankings={rankings}
+                      roleMatches={roleMatches}
+                      selectedIds={selectedCandidateIds}
+                    />
+                  ) : (
+                    <CandidateOverview
+                      profile={profile}
+                      scores={scoreBreakdown}
+                      insights={insights}
+                      roleMatches={roleMatches}
+                    />
+                  )
                 )}
                 {activeTab === 'profile' && (
-                  <ProfileTab
-                    profile={profile}
-                    hasProfile={hasProfile}
-                    editMode={editMode}
-                    setEditMode={setEditMode}
-                    onProfileUpdate={loadDashboardData}
-                  />
+                  isRecruiter || isAdmin ? (
+                    <TalentPoolTab
+                      rankings={rankings}
+                      rankingLoading={rankingLoading}
+                      onQuery={handleRankingQuery}
+                      selectedIds={selectedCandidateIds}
+                      onToggleSelect={toggleCandidateSelection}
+                      roleMatches={roleMatches}
+                      matchesLoading={matchesLoading}
+                      activeRole={rankingRole}
+                    />
+                  ) : (
+                    <ProfileTab
+                      profile={profile}
+                      hasProfile={hasProfile}
+                      editMode={editMode}
+                      setEditMode={setEditMode}
+                      onProfileUpdate={loadDashboardData}
+                    />
+                  )
                 )}
                 {activeTab === 'analytics' && (
-                  <AnalyticsTab
-                    scores={scores}
-                    history={history}
-                    insights={insights}
-                  />
+                  isRecruiter || isAdmin ? (
+                    <RecruiterComparisonTab
+                      comparison={comparisonData}
+                      loading={comparisonLoading}
+                    />
+                  ) : (
+                    <AnalyticsTab
+                      scores={scoreBreakdown}
+                      history={history}
+                      insights={insights}
+                    />
+                  )
                 )}
                 {activeTab === 'ai' && (
-                  <AIInsightsTab
-                    skillGapAnalysis={skillGapAnalysis}
-                    jobFitPrediction={jobFitPrediction}
-                    rankings={rankings}
-                    onAnalysisComplete={(data) => setSkillGapAnalysis(data)}
-                    onPredictionComplete={(data) => setJobFitPrediction(data)}
-                  />
+                  isRecruiter || isAdmin ? (
+                    <OperationsTab reviewer={user} />
+                  ) : (
+                    <AIInsightsTab
+                      resumeSnapshot={resumeSnapshot}
+                      onResumeParsed={handleResumeParsed}
+                      onReportDownload={handleReportDownload}
+                      skillGapAnalysis={skillGapAnalysis}
+                      skillGapLoading={skillGapLoading}
+                      onSkillGapAnalyze={handleSkillGapAnalyze}
+                      jobFitPrediction={jobFitPrediction}
+                      jobFitLoading={jobFitLoading}
+                      onJobFitPredict={handleJobFitPredict}
+                    />
+                  )
                 )}
               </motion.div>
             </AnimatePresence>
@@ -313,8 +505,15 @@ export default function Dashboard(): ReactElement {
   );
 }
 
-// Dashboard Overview Component
-function DashboardOverview({ profile, scores, insights, roleMatches }: any) {
+// Candidate Overview Component
+function CandidateOverview({ profile, scores, roleMatches }: { profile: CandidateProfile | null; scores: ScoreBreakdown | null; roleMatches: RankedCandidate[] }) {
+  const stats = [
+    { icon: Target, label: 'Overall Score', value: scores ? `${scores.overall.toFixed(1)}%` : 'N/A', color: 'from-blue-500 to-cyan-500' },
+    { icon: Award, label: 'Skills Logged', value: profile?.skills?.length ?? 0, color: 'from-purple-500 to-pink-500' },
+    { icon: Activity, label: 'Role Matches', value: roleMatches?.length ?? 0, color: 'from-green-500 to-emerald-500' },
+    { icon: TrendingUp, label: 'Growth Momentum', value: scores ? `${Math.max(0, scores.overall - 70).toFixed(0)} pts` : 'N/A', color: 'from-orange-500 to-red-500' },
+  ];
+
   return (
     <div className="space-y-6">
       <motion.div
@@ -328,71 +527,64 @@ function DashboardOverview({ profile, scores, insights, roleMatches }: any) {
           </div>
           <div>
             <h2 className="text-3xl font-bold text-white">Welcome back!</h2>
-            <p className="text-cyan-300">Here's your competency overview</p>
+            <p className="text-cyan-300">Your competency snapshot is ready.</p>
           </div>
         </div>
 
-        {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            icon={Target}
-            label="Overall Score"
-            value={scores?.overallScore ? `${scores.overallScore}%` : 'N/A'}
-            color="from-blue-500 to-cyan-500"
-          />
-          <StatCard
-            icon={Award}
-            label="Skills Assessed"
-            value={profile?.skills?.length || 0}
-            color="from-purple-500 to-pink-500"
-          />
-          <StatCard
-            icon={Activity}
-            label="Role Matches"
-            value={roleMatches?.length || 0}
-            color="from-green-500 to-emerald-500"
-          />
-          <StatCard
-            icon={TrendingUp}
-            label="Growth Rate"
-            value="+12%"
-            color="from-orange-500 to-red-500"
-          />
+          {stats.map((stat) => (
+            <StatCard key={stat.label} icon={stat.icon} label={stat.label} value={stat.value} color={stat.color} />
+          ))}
         </div>
       </motion.div>
 
-      {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <QuickActionCard
-          icon={User}
-          title="Update Profile"
-          description="Keep your information current"
-          color="from-purple-500 to-pink-600"
-        />
-        <QuickActionCard
-          icon={Brain}
-          title="AI Analysis"
-          description="Get personalized insights"
-          color="from-blue-500 to-cyan-600"
-        />
-        <QuickActionCard
-          icon={FileText}
-          title="Generate Report"
-          description="Download your competency report"
-          color="from-green-500 to-emerald-600"
-        />
+        <QuickActionCard icon={User} title="Update Profile" description="Keep your achievements synced" color="from-purple-500 to-pink-600" />
+        <QuickActionCard icon={Brain} title="AI Analysis" description="Trigger smart diagnostics" color="from-blue-500 to-cyan-600" />
+        <QuickActionCard icon={FileText} title="Download Report" description="Share a PDF with recruiters" color="from-green-500 to-emerald-600" />
       </div>
     </div>
   );
 }
 
-// Stat Card Component
+function RecruiterOverview({ rankings, roleMatches, selectedIds }: { rankings: RankedCandidate[]; roleMatches: RankedCandidate[]; selectedIds: string[] }) {
+  const topSuitability = rankings[0]?.jobFit?.suitability ?? 0;
+  const stats = [
+    { icon: Users, label: 'Active Candidates', value: rankings.length, color: 'from-blue-500 to-indigo-500' },
+    { icon: Brain, label: 'Ready for Shortlist', value: roleMatches.length, color: 'from-emerald-500 to-green-600' },
+    { icon: BarChart3, label: 'Comparisons Running', value: selectedIds.length, color: 'from-orange-500 to-amber-500' },
+    { icon: ShieldCheck, label: 'Top Suitability', value: `${topSuitability}%`, color: 'from-fuchsia-500 to-pink-500' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8"
+      >
+        <div className="flex items-center gap-4 mb-6">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+            <LayoutDashboard className="w-8 h-8 text-white" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-white">Talent Pipeline</h2>
+            <p className="text-cyan-300">Live signal across every candidate.</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {stats.map((stat) => (
+            <StatCard key={stat.label} icon={stat.icon} label={stat.label} value={stat.value} color={stat.color} />
+          ))}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function StatCard({ icon: Icon, label, value, color }: any) {
   return (
-    <motion.div
-      whileHover={{ scale: 1.05, y: -5 }}
-      className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-xl p-6 cursor-pointer"
-    >
+    <motion.div whileHover={{ scale: 1.05, y: -5 }} className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-xl p-6">
       <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${color} flex items-center justify-center mb-4`}>
         <Icon className="w-6 h-6 text-white" />
       </div>
@@ -402,14 +594,10 @@ function StatCard({ icon: Icon, label, value, color }: any) {
   );
 }
 
-// Quick Action Card
 function QuickActionCard({ icon: Icon, title, description, color }: any) {
   return (
-    <motion.div
-      whileHover={{ scale: 1.05, y: -5 }}
-      className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-6 cursor-pointer group"
-    >
-      <div className={`w-14 h-14 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
+    <motion.div whileHover={{ scale: 1.05, y: -5 }} className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-6">
+      <div className={`w-14 h-14 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center mb-4`}>
         <Icon className="w-7 h-7 text-white" />
       </div>
       <h3 className="text-xl font-bold text-white mb-2">{title}</h3>
@@ -418,7 +606,6 @@ function QuickActionCard({ icon: Icon, title, description, color }: any) {
   );
 }
 
-// Profile Tab
 function ProfileTab({ profile, hasProfile, editMode, setEditMode, onProfileUpdate }: any) {
   return (
     <div className="space-y-6">
@@ -441,7 +628,7 @@ function ProfileTab({ profile, hasProfile, editMode, setEditMode, onProfileUpdat
         {editMode || !hasProfile ? (
           <ProfileForm
             initialData={profile || undefined}
-            onSuccess={(data) => {
+            onSuccess={() => {
               setEditMode(false);
               onProfileUpdate();
               toast.success('Profile updated! ✨');
@@ -455,46 +642,143 @@ function ProfileTab({ profile, hasProfile, editMode, setEditMode, onProfileUpdat
   );
 }
 
-// Analytics Tab
-function AnalyticsTab({ scores, history, insights }: any) {
+function AnalyticsTab({ scores, history, insights }: { scores: ScoreBreakdown | null; history: ScoreHistoryEntry[]; insights: InsightSummary | null }) {
   return (
     <div className="space-y-6">
-      <div className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8">
-        <h2 className="text-2xl font-bold text-white flex items-center gap-3 mb-6">
+      <div className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8 space-y-6">
+        <h2 className="text-2xl font-bold text-white flex items-center gap-3">
           <TrendingUp className="w-8 h-8 text-green-400" />
           Analytics Dashboard
         </h2>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {scores && <ScoreBreakdownCard scores={scores} />}
-          {history?.length > 0 && <ScoreTrendLineChart data={history} />}
+          <ScoreBreakdownCard scores={scores} />
+          <ScoreTrendLineChart history={history} />
         </div>
 
-        {insights && <InsightCards insights={insights} />}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <RadarCompetencyChart scores={scores} />
+          <CompetencyBarChart scores={scores} />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <StrengthHeatmap scores={scores} />
+          <SkillGapAnalysis scores={scores} />
+        </div>
+
+        <InsightCards insights={insights} />
       </div>
     </div>
   );
 }
 
-// AI Insights Tab
-function AIInsightsTab({ skillGapAnalysis, jobFitPrediction, rankings, onAnalysisComplete, onPredictionComplete }: any) {
+function TalentPoolTab({
+  rankings,
+  rankingLoading,
+  onQuery,
+  selectedIds,
+  onToggleSelect,
+  roleMatches,
+  matchesLoading,
+  activeRole,
+}: {
+  rankings: RankedCandidate[];
+  rankingLoading: boolean;
+  onQuery: (role: string, limit: number) => Promise<void>;
+  selectedIds: string[];
+  onToggleSelect: (id: string) => void;
+  roleMatches: RankedCandidate[];
+  matchesLoading: boolean;
+  activeRole: string;
+}) {
+  return (
+    <div className="space-y-6">
+      <SmartRankingTable
+        results={rankings}
+        loading={rankingLoading}
+        onQuery={onQuery}
+        selectedIds={selectedIds}
+        onToggleSelect={onToggleSelect}
+        initialRole={activeRole}
+      />
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-white font-semibold text-lg">Match Radar</h3>
+          {matchesLoading && <span className="text-sm text-cyan-300">Scanning...</span>}
+        </div>
+        <JobMatchBoard role={activeRole} matches={roleMatches} />
+      </div>
+    </div>
+  );
+}
+
+function RecruiterComparisonTab({ comparison, loading }: { comparison: RankedCandidate[]; loading: boolean }) {
   return (
     <div className="space-y-6">
       <div className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8">
         <h2 className="text-2xl font-bold text-white flex items-center gap-3 mb-6">
+          <TrendingUp className="w-8 h-8 text-cyan-400" />
+          Comparative Intelligence
+        </h2>
+        <ComparisonTable data={comparison} loading={loading} />
+        <p className="text-white/60 text-sm mt-4">Select at least two candidates in the Talent Pool to populate this view.</p>
+      </div>
+    </div>
+  );
+}
+
+function OperationsTab({ reviewer }: { reviewer: any }) {
+  if (!reviewer) return null;
+  return (
+    <div className="space-y-6">
+      <div className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8">
+        <h2 className="text-2xl font-bold text-white flex items-center gap-3 mb-6">
+          <ShieldCheck className="w-8 h-8 text-emerald-400" />
+          Manual Scoring & Overrides
+        </h2>
+        <p className="text-white/70 mb-6">Push updated competency scores from panel reviews or external assessments. Changes instantly refresh recruiter dashboards.</p>
+        <ScoreInputForm reviewer={reviewer} />
+      </div>
+    </div>
+  );
+}
+
+function AIInsightsTab({
+  resumeSnapshot,
+  onResumeParsed,
+  onReportDownload,
+  skillGapAnalysis,
+  skillGapLoading,
+  onSkillGapAnalyze,
+  jobFitPrediction,
+  jobFitLoading,
+  onJobFitPredict,
+}: {
+  resumeSnapshot: ResumeSnapshot | null;
+  onResumeParsed: (data: ResumeParseResponse) => void;
+  onReportDownload: () => Promise<void>;
+  skillGapAnalysis: SkillGapType | null;
+  skillGapLoading: boolean;
+  onSkillGapAnalyze: (roleFocus?: string) => Promise<void>;
+  jobFitPrediction: JobFitPrediction | null;
+  jobFitLoading: boolean;
+  onJobFitPredict: (role: string) => Promise<void>;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="glass backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-8 space-y-6">
+        <h2 className="text-2xl font-bold text-white flex items-center gap-3">
           <Brain className="w-8 h-8 text-cyan-400" />
           AI-Powered Insights
         </h2>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <ResumeUploadCard onParsed={() => toast.success('Resume analyzed! 🎯')} />
-          <ReportDownloadCard />
+          <ResumeUploadCard latestSnapshot={resumeSnapshot} onParsed={onResumeParsed} />
+          <ReportDownloadCard onDownload={onReportDownload} />
         </div>
 
-        <div className="mt-6 space-y-6">
-          {skillGapAnalysis && <SkillGapPanel analysis={skillGapAnalysis} />}
-          {jobFitPrediction && <JobFitPredictor prediction={jobFitPrediction} />}
-        </div>
+        <SkillGapPanel analysis={skillGapAnalysis} loading={skillGapLoading} onAnalyze={onSkillGapAnalyze} />
+        <JobFitPredictor prediction={jobFitPrediction} loading={jobFitLoading} onPredict={onJobFitPredict} />
       </div>
     </div>
   );
